@@ -1,0 +1,98 @@
+# Hourly: fetch the newest Instagram posts and publish them to GitHub Pages.
+# Monthly: renew the Instagram token before its 60-day expiry.
+#
+# Repository secrets (set by Aisha, never by Claude):
+#   IG_ACCESS_TOKEN   long-lived Instagram token
+#   SECRETS_PAT       fine-grained GitHub token for THIS repository only,
+#                     with "Secrets: read and write" permission. Used solely
+#                     to store the renewed Instagram token.
+#
+# Any failed run makes GitHub email the repository owner, which is the
+# alert. The last good feed stays live on Pages if a run fails.
+
+name: Instagram feed
+
+on:
+  schedule:
+    - cron: "17 * * * *"       # hourly, off the top of the hour
+    - cron: "41 3 1,15 * *"    # token renewal, 1st and 15th of each month
+  workflow_dispatch:
+    inputs:
+      renew_token:
+        description: "Also renew the Instagram token now"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: feed
+  cancel-in-progress: false
+
+jobs:
+  renew-token:
+    if: github.event.schedule == '41 3 1,15 * *' || inputs.renew_token
+    runs-on: ubuntu-latest
+    steps:
+      - name: Renew long-lived Instagram token
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ secrets.SECRETS_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          resp=$(curl -sS --fail-with-body -G "https://graph.instagram.com/refresh_access_token" \
+            --data-urlencode "grant_type=ig_refresh_token" \
+            --data-urlencode "access_token=${IG_ACCESS_TOKEN}") || {
+            echo "Token renewal failed. Reconnect Instagram and set IG_ACCESS_TOKEN again."; exit 1; }
+          new=$(echo "$resp" | jq -r '.access_token // empty')
+          days=$(echo "$resp" | jq -r '(.expires_in // 0) / 86400 | floor')
+          if [ -z "$new" ]; then echo "No token in renewal response."; exit 1; fi
+          echo "::add-mask::$new"
+          printf '%s' "$new" | gh secret set IG_ACCESS_TOKEN --repo "$REPO"
+          echo "Token renewed; valid for about ${days} days."
+
+  fetch:
+    needs: [renew-token]
+    if: always() && (needs.renew-token.result == 'success' || needs.renew-token.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch posts
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          POST_COUNT: "6"
+        run: node scripts/fetch-feed.mjs
+
+      - name: Commit if the feed changed
+        id: commit
+        run: |
+          git config user.name "fringebiscuit-feed-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A public
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "Update Instagram feed"
+            git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/configure-pages@v5
+        if: steps.commit.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.commit.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        with:
+          path: public
+      - uses: actions/deploy-pages@v4
+        if: steps.commit.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
