@@ -1,11 +1,9 @@
 # Hourly: fetch the newest Instagram posts and publish them to GitHub Pages.
-# Monthly: renew the Instagram token before its 60-day expiry.
 #
-# Repository secrets (set by Aisha, never by Claude):
-#   IG_ACCESS_TOKEN   long-lived Instagram token
-#   SECRETS_PAT       fine-grained GitHub token for THIS repository only,
-#                     with "Secrets: read and write" permission. Used solely
-#                     to store the renewed Instagram token.
+# Repository secret (set by Aisha):
+#   IG_ACCESS_TOKEN   Fringebiscuit Facebook Page access token. It does not
+#                     expire, but Meta's data-access window means the Page
+#                     connection must be re-confirmed roughly every 90 days.
 #
 # Any failed run makes GitHub email the repository owner, which is the
 # alert. The last good feed stays live on Pages if a run fails.
@@ -15,13 +13,7 @@ name: Instagram feed
 on:
   schedule:
     - cron: "17 * * * *"       # hourly, off the top of the hour
-    - cron: "41 3 1,15 * *"    # token renewal, 1st and 15th of each month
   workflow_dispatch:
-    inputs:
-      renew_token:
-        description: "Also renew the Instagram token now"
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -33,31 +25,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  renew-token:
-    if: github.event.schedule == '41 3 1,15 * *' || inputs.renew_token
-    runs-on: ubuntu-latest
-    steps:
-      - name: Renew long-lived Instagram token
-        env:
-          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
-          GH_TOKEN: ${{ secrets.SECRETS_PAT }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          resp=$(curl -sS --fail-with-body -G "https://graph.instagram.com/refresh_access_token" \
-            --data-urlencode "grant_type=ig_refresh_token" \
-            --data-urlencode "access_token=${IG_ACCESS_TOKEN}") || {
-            echo "Token renewal failed. Reconnect Instagram and set IG_ACCESS_TOKEN again."; exit 1; }
-          new=$(echo "$resp" | jq -r '.access_token // empty')
-          days=$(echo "$resp" | jq -r '(.expires_in // 0) / 86400 | floor')
-          if [ -z "$new" ]; then echo "No token in renewal response."; exit 1; fi
-          echo "::add-mask::$new"
-          printf '%s' "$new" | gh secret set IG_ACCESS_TOKEN --repo "$REPO"
-          echo "Token renewed; valid for about ${days} days."
-
   fetch:
-    needs: [renew-token]
-    if: always() && (needs.renew-token.result == 'success' || needs.renew-token.result == 'skipped')
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -71,6 +39,7 @@ jobs:
       - name: Fetch posts
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: "17841403821885014"
           POST_COUNT: "6"
         run: node scripts/fetch-feed.mjs
 
