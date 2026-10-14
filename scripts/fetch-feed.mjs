@@ -5,8 +5,13 @@
 // Instagram's media URLs are signed CDN links that expire, so every image is
 // downloaded and re-served from this repository rather than hot-linked.
 //
+// Source: Instagram Graph API via the Fringebiscuit Facebook Page.
+// The token is a Page access token (does not expire; Meta's data-access
+// window still needs the connection re-confirmed roughly every 90 days).
+//
 // Environment:
-//   IG_ACCESS_TOKEN   long-lived Instagram token (repository secret)
+//   IG_ACCESS_TOKEN   Fringebiscuit Page access token (repository secret)
+//   IG_USER_ID        Instagram business account ID (not secret)
 //   POST_COUNT        optional, defaults to 6
 //
 // Exit codes: non-zero on any failure, so the workflow fails visibly and
@@ -21,7 +26,8 @@ const TOKEN = process.env.IG_ACCESS_TOKEN;
 const COUNT = Number(process.env.POST_COUNT || 6);
 const OUT = path.resolve("public");
 const IMG_DIR = path.join(OUT, "img");
-const API = "https://graph.instagram.com";
+const API = "https://graph.facebook.com/v26.0";
+const IG_USER_ID = process.env.IG_USER_ID || "17841403821885014";
 
 if (!TOKEN) {
   console.error("IG_ACCESS_TOKEN is not set.");
@@ -71,7 +77,7 @@ async function main() {
   const fields =
     "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,children{media_type,media_url,thumbnail_url}";
   const data = await getJSON(
-    `${API}/me/media?fields=${encodeURIComponent(fields)}&limit=${COUNT * 2}&access_token=${TOKEN}`
+    `${API}/${IG_USER_ID}/media?fields=${encodeURIComponent(fields)}&limit=${COUNT * 2}&access_token=${TOKEN}`
   );
 
   const posts = [];
